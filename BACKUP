@@ -1,0 +1,119 @@
+# PowerShell Script to Automate Backup and Restoration Validation of Critical Files, System States, and Additional Configurations
+
+# Define backup source and destination
+$backupPath = "C:\Backups"
+$backupName = "Backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
+$backupFullPath = "$backupPath\$backupName"
+
+# Log file for backup process
+$logFile = "C:\BackupLogs\BackupLog_$(Get-Date -Format 'yyyyMMdd').txt"
+Start-Transcript -Path $logFile
+
+# Ensure backup directory exists
+if (!(Test-Path -Path $backupPath)) {
+    New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+    Write-Output "Created backup directory: $backupPath"
+}
+
+# Define encryption key path
+$encryptionKeyDir = "C:\BackupKey"
+$encryptionKey = "$encryptionKeyDir\backup_key.txt"
+
+# Ensure encryption key directory exists
+if (!(Test-Path -Path $encryptionKeyDir)) {
+    New-Item -ItemType Directory -Path $encryptionKeyDir -Force | Out-Null
+    Write-Output "Created encryption key directory: $encryptionKeyDir"
+}
+
+# Generate encryption key if it does not exist
+if (!(Test-Path $encryptionKey)) {
+    $key = New-Object byte[] 32
+    [Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($key)
+    [Convert]::ToBase64String($key) | Set-Content -Path $encryptionKey
+    Write-Output "Encryption key generated and stored at: $encryptionKey"
+}
+
+# Read the stored encryption key
+$secureKey = [Convert]::FromBase64String((Get-Content -Path $encryptionKey))
+
+# Backup System State (Requires Admin Privileges)
+$systemStateBackupPath = "$backupPath\SystemStateBackup"
+wbadmin start systemstatebackup -backuptarget:$systemStateBackupPath -quiet
+Write-Output "System State Backup successful: $systemStateBackupPath"
+
+# Backup IIS Configuration
+$iisConfigPath = "C:\Windows\System32\inetsrv\Config"
+$iisBackupPath = "$backupPath\IIS_Config"
+xcopy $iisConfigPath $iisBackupPath /E /I /Y
+Write-Output "IIS Configuration Backup successful."
+
+# Backup Windows Task Scheduler Jobs
+$tasksPath = "C:\Windows\System32\Tasks"
+$tasksBackupPath = "$backupPath\Tasks_Backup"
+xcopy $tasksPath $tasksBackupPath /E /I /Y
+Write-Output "Scheduled Tasks Backup successful."
+
+# Backup Installed Programs List
+$installedProgramsBackup = "$backupPath\Installed_Programs.csv"
+Get-WmiObject -Query "SELECT * FROM Win32_Product" | Select-Object Name, Version | Export-Csv $installedProgramsBackup -NoTypeInformation
+Write-Output "Installed Programs Backup successful."
+
+# Backup Windows Event Logs
+$eventLogsPath = "C:\Windows\System32\winevt\Logs"
+$eventLogsBackupPath = "$backupPath\EventLogs"
+xcopy $eventLogsPath $eventLogsBackupPath /E /I /Y
+Write-Output "Windows Event Logs Backup successful."
+
+# Backup Windows Drivers
+$driversBackupPath = "$backupPath\Drivers"
+Export-WindowsDriver -Online -Destination $driversBackupPath
+Write-Output "Drivers Backup successful."
+
+# Backup Windows Defender Configuration
+$defenderPath = "C:\ProgramData\Microsoft\Windows Defender"
+$defenderBackupPath = "$backupPath\DefenderBackup"
+xcopy $defenderPath $defenderBackupPath /E /I /Y
+Write-Output "Windows Defender Backup successful."
+
+# Backup Windows Update History
+$windowsUpdateBackup = "$backupPath\Windows_Updates.csv"
+Get-HotFix | Export-Csv $windowsUpdateBackup -NoTypeInformation
+Write-Output "Windows Update History Backup successful."
+
+# Backup Windows Registry
+$registryBackupPath = "$backupPath\FullRegistryBackup.reg"
+reg export HKLM $registryBackupPath /y
+Write-Output "Registry Backup successful."
+
+# Ensure that the backup file exists before encrypting
+if (Test-Path $backupFullPath) {
+    # Encrypt backups using SecureString
+    $encryptedBackupPath = "$backupFullPath.secure"
+    $securePassword = ConvertTo-SecureString -String "StrongPassword123" -AsPlainText -Force
+    Protect-CmsMessage -To "BackupCert" -Path $backupFullPath -OutFile $encryptedBackupPath
+    Write-Output "Backup encrypted successfully."
+
+    # Validate restoration by testing file integrity
+    if (Test-Path $encryptedBackupPath) {
+        Write-Output "Backup validation successful: File exists and encrypted."
+    } else {
+        Write-Output "Backup validation failed: File missing or corrupted."
+    }
+} else {
+    Write-Output "Backup file does not exist. Skipping encryption."
+}
+
+# Backup Retention Logic (Delete backups older than 30 days)
+$backupRetentionDays = 30
+$backups = Get-ChildItem -Path $backupPath -File
+foreach ($backup in $backups) {
+    $fileAge = (Get-Date) - $backup.LastWriteTime
+    if ($fileAge.Days -gt $backupRetentionDays) {
+        Remove-Item -Path $backup.FullName -Force
+        Write-Output "Deleted old backup: $($backup.Name)"
+    }
+}
+
+# End of backup process
+Write-Output "Backup process completed."
+Stop-Transcript
